@@ -5,6 +5,7 @@ import sys
 import traceback
 import socket
 import struct
+import datetime
 
 class TSPacket(object):
     def __init__(self, raw_data=None):
@@ -147,6 +148,7 @@ def main():
           #if (packet.start):
           if (pid == 0 or packet.pid == pid):
             print('')
+            sys.stdout.write(str(datetime.datetime.now()) + ' - ')
             print(packet)
             try:
               pes = PESPacket(packet)
