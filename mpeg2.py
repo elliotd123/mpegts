@@ -1,6 +1,10 @@
+#!/usr/bin/env python
 from struct import unpack
 from time import sleep
 import sys
+import traceback
+import socket
+import struct
 
 class TSPacket(object):
     def __init__(self, raw_data=None):
@@ -56,6 +60,8 @@ class PESPacket(object):
         '\xf8':     'PMT',
         '\xf9':     'ancillary_stream',
         '\xff':     'program_stream_directory',
+        '\xe0':     'Video',
+        '\xc0':     'Audio',
     }
 
     def __init__(self, tspacket=None):
@@ -69,31 +75,24 @@ class PESPacket(object):
         self.streamtype = None
 
         if tspacket:
+            
             self.parse(tspacket)
+            
 
     def parse(self, tspacket):
+        
         if not tspacket.start:
             self.payload = tspacket.payload
             return
+        
+        #if tspacket.adapt:            
+            #data = unpack('>%ic' % len(tspacket.payload),tspacket.payload)
 
-        if tspacket.adapt:
-            length = unpack('>c', tspacket.payload[0])
-            length = ord(length[0])
-            length, adapt = unpack('>cs%i' % length, tspacket.payload)
-            print repr(length, adapt)
-
-        self.prefix, self.streamid, self.length = unpack('>3scH', tspacket.payload)
-        self.payload = tspacket.payload[6:]
-
-        if self.id in self.STREAM_TYPES:
-            self.streamtype = self.STREAM_TYPES[self.id]
+        data = unpack('>%ic' % len(tspacket.payload),tspacket.payload)
+        if data[3] in self.STREAM_TYPES:
+          self.streamtype = self.STREAM_TYPES[data[3]]
         else:
-            if (self.id >> 4) == 14:
-                self.streamtype = 'video'
-                self.streamid = self.id & 15
-            if (self.id >> 5) == 6:
-                self.streamtype = 'audio'
-                self.streamid = self.id & 31
+          self.streamtype = unpack('>%ic' % len(tspacket.payload),tspacket.payload)[3]
 
     def is_header(self):
         if self.prefix and self.id and self.length:
@@ -102,30 +101,66 @@ class PESPacket(object):
             return False
 
 def main():
-    input = file(sys.argv[1], 'rb')
+    
+    pid = 0
+    if (len(sys.argv) < 2):
+      print('Usage: ' + sys.argv[0] + ' <multicast>:<port>')
+      sys.exit(0)
+    if (len(sys.argv) >= 3):
+      pid=int(sys.argv[2])
+    ip_address = sys.argv[1].split(':')[0]
+    port = sys.argv[1].split(':')[1]
+    
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((ip_address,int(port)))
+    
+    mreq = struct.pack("4sl", socket.inet_aton(ip_address), socket.INADDR_ANY)
+    
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+    
     psize = 188 
     chunksize = 7
-
+    counter = 0
     while True:
-        data = input.read(psize * chunksize)
-        if not data: break
-
-        # Chop off anything before the sync bit
-        sync_offset = data.find('\x47')
-        if sync_offset == -1:
-            print 'No sync bit in packet.'
-            continue
-        if sync_offset != 0:
-            print 'Resync'
-            data = data[sync_offset:]
-
-        for i in range(chunksize):
-            packet = data[:psize]
-            data = data[psize:]
-
-            packet = TSPacket(packet)
-            print packet
-            #pes = PESPacket(packet)
-            #print pes.streamtype
+      data = b''
+      for i in range(0,7):
+        l_data = sock.recv(10240)
+      	data += l_data
+      if not data:
+      	break
+      
+      # Chop off anything before the sync bit
+      sync_offset = data.find('\x47')
+      if sync_offset == -1:
+          print 'No sync bit in packet.'
+          continue
+      if sync_offset != 0:
+          print 'Resync'
+          data = data[sync_offset:]
+      
+      for i in range(chunksize):
+          packet = data[:psize]
+          data = data[psize:]
+      
+          packet = TSPacket(packet)
+          #if (packet.start):
+          if (pid == 0 or packet.pid == pid):
+            print('')
+            print(packet)
+            try:
+              pes = PESPacket(packet)
+              print(pes.streamtype)
+            except:
+              #print(traceback.format_exc())
+              print('Oops')
+          counter += 1
+          if (counter % 100 == 0):
+            prefix = 'Frames checked: '
+            for i in range(0,len(str(counter)) + len(prefix)):
+              sys.stdout.write('\b \b')
+              sys.stdout.flush()
+            sys.stdout.write(prefix + str(counter))
+            sys.stdout.flush()
 
 if __name__ == '__main__': main()
