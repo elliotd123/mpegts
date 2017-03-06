@@ -104,7 +104,7 @@ def main():
     
     pid = 0
     if (len(sys.argv) < 2):
-      print('Usage: ' + sys.argv[0] + ' <multicast>:<port>')
+      print('Usage: ' + sys.argv[0] + ' multicast:port <pid>')
       sys.exit(0)
     if (len(sys.argv) >= 3):
       pid=int(sys.argv[2])
