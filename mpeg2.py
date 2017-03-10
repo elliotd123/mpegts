@@ -1,116 +1,18 @@
 #!/usr/bin/env python
-from struct import unpack
-from time import sleep
 import sys
 import traceback
 import socket
 import struct
 import datetime
+from pat import PMTTable
+from pat import PATTable
+from mpeg_packet import TSPacket
+from mpeg_packet import PESPacket
 
-class TSPacket(object):
-    def __init__(self, raw_data=None):
-        self.raw_data = raw_data
-        self.sync = None
-        self.pid = None
-        self.error = None
-        self.start = None
-        self.priority = None
-        self.scramble = None
-        self.adapt = None
-        self.count = None
-        self.payload = None
 
-        if raw_data:
-            self.parse(raw_data)
-
-    def parse(self, raw_data):
-        self.raw_data = raw_data
-
-        sync, pid, count, payload = unpack('>BHB184s', raw_data)
-        
-        self.sync = sync
-
-        self.error = (pid & 32768) >> 15
-        self.start = (pid & 16384) >> 14
-        self.priority = (pid & 8192) >> 13
-        self.pid = pid & 8191
-
-        self.scramble = (count & 192) >> 6
-        self.adapt = (count & 48) >> 4
-        self.count = count & 15
-
-        self.payload = payload
-
-    def __str__(self):
-        return 'sync: %#x  error: %i  start: %i  priority: %i  pid: %#x  scramble: %i  adapt: %i  count: %#x  len(payload): %i' % (self.sync, self.error, self.start, self.priority, self.pid, self.scramble, self.adapt, self.count, len(self.payload))
-
-class PESPacket(object):
-    STREAM_TYPES = {
-        '\xbc':     'program_stream_map',
-        '\xbd':     'private_stream_1',
-        '\xbe':     'padding_stream',
-        '\xbf':     'private_stream_2',
-        '\xf0':     'ECM_stream',
-        '\xf1':     'EMM_stream',
-        '\xf2':     'DSM-CC',
-        '\xf3':     'ISO/IEG_13552_stream',
-        '\xf4':     'PMT',
-        '\xf5':     'PMT',
-        '\xf6':     'PMT',
-        '\xf7':     'PMT',
-        '\xf8':     'PMT',
-        '\xf9':     'ancillary_stream',
-        '\xff':     'program_stream_directory',
-        '\xe0':     'Video',
-        '\xc0':     'Audio',
-    }
-
-    def __init__(self, tspacket=None):
-        self.tspacket = tspacket
-
-        self.prefix = None
-        self.id = None
-        self.length = None
-
-        self.streamid = None
-        self.streamtype = None
-
-        if tspacket:
-            
-            self.parse(tspacket)
-            
-
-    def parse(self, tspacket):
-        
-        if not tspacket.start:
-            self.payload = tspacket.payload
-            return
-        
-        #if tspacket.adapt:            
-            #data = unpack('>%ic' % len(tspacket.payload),tspacket.payload)
-
-        data = unpack('>%ic' % len(tspacket.payload),tspacket.payload)
-        if data[3] in self.STREAM_TYPES:
-          self.streamtype = self.STREAM_TYPES[data[3]]
-        else:
-          self.streamtype = unpack('>%ic' % len(tspacket.payload),tspacket.payload)[3]
-
-    def is_header(self):
-        if self.prefix and self.id and self.length:
-            return True
-        else:
-            return False
-
-def main():
-    
-    pid = 0
-    if (len(sys.argv) < 2):
-      print('Usage: ' + sys.argv[0] + ' multicast:port <pid>')
-      sys.exit(0)
-    if (len(sys.argv) >= 3):
-      pid=int(sys.argv[2])
-    ip_address = sys.argv[1].split(':')[0]
-    port = sys.argv[1].split(':')[1]
+def start_collection(multicast, pid=-1, scte=False):
+    ip_address = multicast.split(':')[0]
+    port = multicast.split(':')[1]
     
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -123,9 +25,11 @@ def main():
     psize = 188 
     chunksize = 7
     counter = 0
+    PATchecked = False
+    PMTchecked = False
     while True:
       data = b''
-      for i in range(0,7):
+      for i in range(0,chunksize):
         l_data = sock.recv(10240)
       	data += l_data
       if not data:
@@ -145,24 +49,38 @@ def main():
           data = data[psize:]
       
           packet = TSPacket(packet)
-          #if (packet.start):
-          if (pid == 0 or packet.pid == pid):
+          if (PATchecked == False and packet.pid == 0):
+            pat = PATTable(packet.raw_data)
+            print('\nPAT found: Program ' + str(pat.program))
+            print('\tPID found: ' + str(pat.pid))
+            PATchecked = True
+
+          if (pid == -1 or packet.pid == pid):
             print('')
             sys.stdout.write(str(datetime.datetime.now()) + ' - ')
             print(packet)
             try:
               pes = PESPacket(packet)
-              print(pes.streamtype)
+              #print(pes.streamtype)
             except:
-              #print(traceback.format_exc())
               print('Oops')
           counter += 1
-          if (counter % 100 == 0):
-            prefix = 'Frames checked: '
-            for i in range(0,len(str(counter)) + len(prefix)):
+
+          #Print out counter info
+          if (counter % 100 == 0 and False):
+            prefix = 'Mbits checked: '
+            mb = counter * psize * chunksize * 8 / (1024 * 1024)
+            for i in range(0,len(str(mb)) + len(prefix)):
               sys.stdout.write('\b \b')
               sys.stdout.flush()
-            sys.stdout.write(prefix + str(counter))
+            sys.stdout.write(prefix + str(mb))
             sys.stdout.flush()
 
-if __name__ == '__main__': main()
+if __name__ == '__main__':
+  if (len(sys.argv) < 2):
+    print('Usage: ' + sys.argv[0] + ' <multicast>:<port> [pid]')
+    sys.exit(0)
+  pid = -1
+  if (len(sys.argv) >= 3):
+    pid = int(sys.argv[2])
+  start_collection(sys.argv[1], pid)
